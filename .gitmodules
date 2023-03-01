@@ -1,0 +1,6 @@
+[submodule "third-party/libsoundio"]
+	path = third-party/libsoundio
+	url = https://github.com/andrewrk/libsoundio
+[submodule "third-party/libsndfile"]
+	path = third-party/libsndfile
+	url = https://github.com/libsndfile/libsndfile
