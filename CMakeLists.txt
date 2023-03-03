@@ -47,7 +47,7 @@ find_package(SndFile REQUIRED)
 set(WAVESTREAM_TARGET_NAME ${CMAKE_PROJECT_NAME})
 add_executable(${WAVESTREAM_TARGET_NAME})
 target_sources(${WAVESTREAM_TARGET_NAME} PRIVATE
-  ${CMAKE_CURRENT_LIST_DIR}/wavestream.c
+  ${CMAKE_CURRENT_LIST_DIR}/src/wavestream.c
 )
 target_include_directories(${WAVESTREAM_TARGET_NAME} PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}
@@ -59,4 +59,4 @@ target_link_libraries(${WAVESTREAM_TARGET_NAME} PRIVATE
 )
 
 # configure an example client
-add_executable(client ${CMAKE_CURRENT_SOURCE_DIR}/client.c)
+add_executable(client ${CMAKE_CURRENT_SOURCE_DIR}/src/client.c)
