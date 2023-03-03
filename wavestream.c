@@ -9,6 +9,7 @@
 #include <sndfile.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +47,13 @@ static void (*write_sample)(char *ptr, double sample);
 static volatile bool want_pause = false;
 
 /** the client socket file descriptor through which to stream values */
-int client_sockfd = -1;
+volatile int client_sockfd = -1;
+
+/** the client address information (only one client at a time may be connected, but this client may come and go) */
+struct sockaddr_in client_addr;
+
+/** socket file descriptor for the listening port */
+volatile int server_sockfd = -1;
 
 /**
  * forward declarations
@@ -62,7 +69,8 @@ static void write_sample_float32ne(char *ptr, double sample);
 static void write_sample_float64ne(char *ptr, double sample);
 static void write_callback(struct SoundIoOutStream *outstream, int frame_count_min, int frame_count_max);
 static void underflow_callback(struct SoundIoOutStream *outstream);
-static int send_chunk_to_client(int sockfd, double* chunk_buf, int chunk_len);
+static int try_send_chunk_to_client(double* chunk_buf, int chunk_len);
+static int try_accept_client();
 
 static int show_usage(char* progname) {
   int ret = 0;
@@ -105,11 +113,25 @@ int main(int argc, char **argv) {
             port_number = atoi(argv[idx]);
         } else {
             inputfilename = arg;
+            if (inputfilename [0] == '-') {
+                printf ("Error : Input filename (%s) looks like an option.\n\n", inputfilename) ;
+                return show_usage (progname);
+            };
         }
     }
 
     // show user the arguments
     printf("input file: %s\n", inputfilename);
+
+    // open the wav file
+    memset (&sfinfo, 0, sizeof (sfinfo)) ;
+    infile = sf_open(inputfilename, SFM_READ, &sfinfo);
+	if (NULL == infile) {
+        printf ("Not able to open input file %s.\n", inputfilename);
+		puts (sf_strerror (NULL));
+		goto cleanup_sf;
+	};
+    printf("sample rate: %d hz\n", sfinfo.samplerate);
 
     // start the server
     // stop_server should be called upon exit after start_server was successfully
@@ -120,35 +142,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "ERROR: failed to start server\n");
         return 1;
     }
-
-    // accept a connection
-    // (but for now only one connection)
-    struct sockaddr_in client_addr;
-    int client_addr_len = sizeof(client_addr);
-    client_sockfd =
-        accept(server_sockfd, (struct sockaddr*)&client_addr, &client_addr_len);
-    if (client_sockfd < 0) {
-      fprintf(stderr, "ERROR: failed to accept the client\n");
-      return 1;
-    }
-    printf(
-        "connected to client: %d (%d)\n", client_sockfd, client_addr.sin_port);
-
-    // get wav file to play
-	char* infilename = argv[1];
-	if (infilename [0] == '-') {
-        printf ("Error : Input filename (%s) looks like an option.\n\n", infilename) ;
-		return show_usage (progname);
-	};
-
-    // open the wav file
-    memset (&sfinfo, 0, sizeof (sfinfo)) ;
-    infile = sf_open(infilename, SFM_READ, &sfinfo);
-	if (NULL == infile) {
-        printf ("Not able to open input file %s.\n", infilename);
-		puts (sf_strerror (NULL));
-		goto cleanup_sf;
-	};
 
     struct SoundIo *soundio = soundio_create();
     if (!soundio) {
@@ -307,11 +300,22 @@ static int start_server(
   // construct the listening socket
   // the server will establish a *listening* socket - this socket is only used
   // to listen for incoming connections
-  int server_sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  server_sockfd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_sockfd < 0) {
     fprintf(stderr, "ERROR opening listening socket\n");
     ret = 1;
     goto out;
+  }
+
+  // make the server socket non-blocking
+  // https://jameshfisher.com/2017/04/05/set_socket_nonblocking/
+  int server_socketfd_flags = fcntl(server_sockfd, F_GETFL);
+  if (server_socketfd_flags == -1) {
+    fprintf(stderr, "ERROR getting listening socket flags (errno: %d)\n", errno);
+  }
+  ret = fcntl(server_sockfd, F_SETFL, server_socketfd_flags | O_NONBLOCK);
+  if (ret == -1) {
+    fprintf(stderr, "ERROR setting listening socket flags (errno: %d)\n", errno);
   }
 
   // bind the listening socket
@@ -325,7 +329,7 @@ static int start_server(
   serv_addr.sin_port = htons(port_number);
   ret = bind(server_sockfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
   if (ret < 0) {
-    fprintf(stderr, "ERROR on binding listening socket\n");
+    fprintf(stderr, "ERROR on binding listening socket (errno: %d)\n", errno);
     goto out;
   }
 
@@ -383,6 +387,13 @@ static void write_callback(struct SoundIoOutStream *outstream, int frame_count_m
     struct SoundIoChannelArea *areas;
     int ret = 0;
 
+    // check for client connections
+    ret = try_accept_client();
+    if (0 != ret) {
+        fprintf(stderr, "ERROR trying to accept client\n");
+        exit(1);
+    }
+
     // attempt to feed the maximum number of frames
     // (one frame includes a sample for every channel)
     // output: single channel
@@ -407,6 +418,8 @@ static void write_callback(struct SoundIoOutStream *outstream, int frame_count_m
         // read new data into the buffer
         int file_readcount = (int) sf_readf_double (infile, snd_buf, frame_count);
         if (file_readcount <= 0) {
+            // reset to beginning of the soundfile
+            sf_seek(infile, 0, SEEK_SET);
             break;
         }
         if (file_readcount != frame_count) {
@@ -415,7 +428,7 @@ static void write_callback(struct SoundIoOutStream *outstream, int frame_count_m
         }
 
         // send the chunk through the socket
-        ret = send_chunk_to_client(client_sockfd, snd_buf, frame_count);
+        ret = try_send_chunk_to_client(snd_buf, frame_count);
         if (0 != ret) {
             fprintf(stderr, "ERROR: failed to write chunk to client\n");
             break;
@@ -471,15 +484,39 @@ static void underflow_callback(struct SoundIoOutStream *outstream) {
     fprintf(stderr, "underflow %d\n", count++);
 }
 
-static int send_chunk_to_client(int sockfd, double* chunk_buf, int chunk_len) {
+static int try_send_chunk_to_client(double* chunk_buf, int chunk_len) {
     if (NULL == chunk_buf) {
         return -ENOMEM;
+    }
+    
+    // if there is no client to write to then just return okay
+    if (client_sockfd == -1) {
+        return 0;
     }
 
     // send the frames to the client connection
     int chars_to_send = chunk_len * sizeof(double)/sizeof(char);
-    int chars_sent = send(sockfd, (void*)chunk_buf, chars_to_send, 0);
+    int chars_sent = send(client_sockfd, (void*)chunk_buf, chars_to_send, 0);
     if (chars_sent == -1) {
+        if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
+            printf("Would have blocked, skipping this chunk\n");
+            return 0;
+        } else if (errno == EPIPE) {
+            // TODO: figure out why this broken pipe condition stops the whole system from continuing...
+            // expected behavior is that the server becomes available again for another client to connect.
+            int close_status = close(client_sockfd);
+            if (0 != close_status) {
+                fprintf(stderr, "SERIOUS ERROR: failed to close old file descriptor\n");
+                exit(1);
+            }
+
+            errno = 0;
+            printf("broken pipe, forgetting client\n");
+            client_sockfd = -1;
+            return 0;
+        }
+
+        client_sockfd = -1;
         fprintf(stderr, "Error sending data: %s\n", strerror(errno));
         return 1;
     }
@@ -489,4 +526,36 @@ static int send_chunk_to_client(int sockfd, double* chunk_buf, int chunk_len) {
     }
 
     return 0;
+}
+
+/**
+ * @brief Tries to accept a client, if available.
+ * 
+ */
+static int try_accept_client() {
+    // check for already connected client
+    if (client_sockfd != -1) {
+        return 0;
+    }
+
+    // if no client connected then try to accept another
+    int client_addr_len = sizeof(client_addr);
+    bzero((char*)&client_addr, sizeof(client_addr));
+    int ret = accept(server_sockfd, (struct sockaddr*)&client_addr, &client_addr_len);
+    if (ret == -1) {
+        client_sockfd = ret;
+        if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
+            // there was no client available to accept, this is allowed
+            errno = 0;
+            return 0;
+        } else {
+            fprintf(stderr, "ERROR: failed to accept the client\n");
+            return ret;
+        }
+    } else {
+        client_sockfd = ret;
+        ret = 0;
+        printf("connected to client: %d (%d)\n", client_sockfd, client_addr.sin_port);
+        return 0;
+    }
 }
