@@ -4,6 +4,7 @@
  * @brief sucks in data from a server.
  */
 
+#include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -12,7 +13,6 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <errno.h>
 
 static int show_usage(char* progname);
 
@@ -89,22 +89,24 @@ int main(int argc, char* argv[]) {
     chars_received = recv(sockfd, &rx_buffer, rx_buffer_len, 0);
 
     if (chars_received == -1) {
-        // an error has occurred
-        fprintf(stderr, "Error receiving data: %s\n", strerror(errno));
-        continue;
+      // an error has occurred
+      fprintf(stderr, "Error receiving data: %s\n", strerror(errno));
+      continue;
     } else if (chars_received == 0) {
-        // remote peer has closed the connection
-        printf("Remote peer has closed the connection.\n");
-        continue;
+      // remote peer has closed the connection
+      printf("Remote peer has closed the connection.\n");
+      continue;
     } else {
-        // data received successfully
-        printf("Received %d bytes of data.\n", chars_received);
+      // data received successfully
+      printf("Received %d bytes of data.\n", chars_received);
     }
 
   } while (chars_received > 0);
 
   if (chars_received < 0) {
-    fprintf(stderr, "ERROR receiving message (return code: %d, errno: %d)\n", chars_received, errno);
+    fprintf(
+        stderr, "ERROR receiving message (return code: %d, errno: %d)\n",
+        chars_received, errno);
     return 1;
   }
   if (chars_received == 0) {
