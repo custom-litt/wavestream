@@ -18,3 +18,7 @@ notes about building:
 ```./client localhost 42310```
 
 ^^^ start a client which connects to the wavstream server to handle streamed audio frames.
+
+# clang-format
+
+```find -E . -regex '\.\/(src)\/.*\.(c|h)$' | xargs clang-format -i```
