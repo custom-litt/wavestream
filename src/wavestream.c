@@ -39,6 +39,10 @@ SNDFILE* infile = NULL;
  * through libsoundio output*/
 double* snd_buf = NULL;
 
+/** buffer where chunks of sound file will be converted to ints to be sent
+ * to the client socket */
+int* snd_buf_int = NULL;
+
 /** function pointer used to select an appropriate write method for the selected
  * backend */
 static void (*write_sample)(char* ptr, double sample);
@@ -72,7 +76,7 @@ static void write_callback(
     struct SoundIoOutStream* outstream, int frame_count_min,
     int frame_count_max);
 static void underflow_callback(struct SoundIoOutStream* outstream);
-static int try_send_chunk_to_client(double* chunk_buf, int chunk_len);
+static int try_send_chunk_to_client(int* chunk_buf, int chunk_len);
 static int try_accept_client();
 
 static int show_usage(char* progname) {
@@ -158,6 +162,12 @@ int main(int argc, char** argv) {
   // allocate the buffer for samples from the file
   snd_buf = malloc(BLOCK_SIZE * sizeof(double));
   if (snd_buf == NULL) {
+    fprintf(stderr, "Error : Out of memory.\n\n");
+    return 1;
+  };
+  // allocate the buffer for samples from the file
+  snd_buf_int = malloc(BLOCK_SIZE * sizeof(int));
+  if (snd_buf_int == NULL) {
     fprintf(stderr, "Error : Out of memory.\n\n");
     return 1;
   };
@@ -440,21 +450,18 @@ static void write_callback(
 
     // read new data into the buffer
     int file_readcount = (int)sf_readf_double(infile, snd_buf, frame_count);
-    if (file_readcount <= 0) {
+
+    // check for end of file
+    if ((file_readcount <= 0)) {
       // reset to beginning of the soundfile
       sf_seek(infile, 0, SEEK_SET);
       break;
     }
+
+    // check for incomplete read
     if (file_readcount != frame_count) {
       fprintf(
           stderr, "ERROR: mismatch between read frames and requested frames\n");
-      break;
-    }
-
-    // send the chunk through the socket
-    ret = try_send_chunk_to_client(snd_buf, frame_count);
-    if (0 != ret) {
-      fprintf(stderr, "ERROR: failed to write chunk to client\n");
       break;
     }
 
@@ -481,6 +488,10 @@ static void write_callback(
         write_sample(areas[channel].ptr, sample);
         areas[channel].ptr += areas[channel].step;
       }
+
+      // convert the sample to an int for transmit over network
+      double range = (double)INT16_MAX - (double)INT16_MIN;
+      snd_buf_int[frame] = (int)(sample * range / 2.0);
     }
 
     // stop writing to the output stream
@@ -492,6 +503,13 @@ static void write_callback(
       fprintf(
           stderr, "unrecoverable stream error: %s\n", soundio_strerror(ret));
       exit(1);
+    }
+
+    // send the chunk through the socket
+    ret = try_send_chunk_to_client(snd_buf_int, frame_count);
+    if (0 != ret) {
+      fprintf(stderr, "ERROR: failed to write chunk to client\n");
+      break;
     }
 
     // decrement the number of frames that need to be pushed into the output
@@ -514,7 +532,7 @@ static void underflow_callback(struct SoundIoOutStream* outstream) {
   fprintf(stderr, "underflow %d\n", count++);
 }
 
-static int try_send_chunk_to_client(double* chunk_buf, int chunk_len) {
+static int try_send_chunk_to_client(int* chunk_buf, int chunk_len) {
   if (NULL == chunk_buf) {
     return -ENOMEM;
   }
@@ -525,7 +543,7 @@ static int try_send_chunk_to_client(double* chunk_buf, int chunk_len) {
   }
 
   // send the frames to the client connection
-  int chars_to_send = chunk_len * sizeof(double) / sizeof(char);
+  int chars_to_send = chunk_len * sizeof(int) / sizeof(char);
   int chars_sent = send(client_sockfd, (void*)chunk_buf, chars_to_send, 0);
   if (chars_sent == -1) {
     if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
