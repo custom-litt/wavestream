@@ -58,5 +58,20 @@ target_link_libraries(${WAVESTREAM_TARGET_NAME} PRIVATE
   SndFile::sndfile
 )
 
+# micstream
+set(MICSTREAM_TARGET_NAME micstream)
+add_executable(${MICSTREAM_TARGET_NAME})
+target_sources(${MICSTREAM_TARGET_NAME} PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src/micstream.c
+)
+target_include_directories(${MICSTREAM_TARGET_NAME} PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}
+	${CMAKE_CURRENT_LIST_DIR}/include
+)
+target_link_libraries(${MICSTREAM_TARGET_NAME} PRIVATE
+  ${SOUNDIO_LIBRARY}
+  SndFile::sndfile
+)
+
 # configure an example client
 add_executable(client ${CMAKE_CURRENT_SOURCE_DIR}/src/client.c)
