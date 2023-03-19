@@ -251,6 +251,8 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  printf("bytes per sample: %d\n", instream->bytes_per_sample);
+
   if ((err = soundio_instream_start(instream))) {
     fprintf(stderr, "unable to start input device: %s", soundio_strerror(err));
     return 1;
@@ -331,8 +333,6 @@ static void read_callback(
     }
 
     if (!frame_count) break;
-
-    printf("bytes per sample: %d\n", instream->bytes_per_sample);
 
     if (!areas) {
       // Due to an overflow there is a hole. Fill the ring buffer with
